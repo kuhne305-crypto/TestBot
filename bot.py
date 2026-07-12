@@ -261,11 +261,8 @@ def build_abmeldung_liste_embed(guild):
         grund     = info.get("grund", "-")
 
         block = (
-            f"### {name}  ·  {typ_label}\n"
-            f"{mention}\n\n"
-            f"**Von:** {von}\n"
-            f"**Bis:** {bis}\n"
-            f"**Grund:** {grund}"
+            f"{mention}  ·  {typ_label}\n"
+            f"Von: **{von}**  Bis: **{bis}**  Grund: {grund}"
         )
         bloecke.append(block)
 
