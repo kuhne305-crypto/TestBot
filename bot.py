@@ -219,7 +219,7 @@ async def update_nachricht(guild):
         print(f"Fehler beim Update der Nachricht: {e}")
 
 # ─── ABMELDUNGS-ÜBERSICHT (persistente Liste) ────────────────────────────────
-def build_abmeldung_liste_embed():
+def build_abmeldung_liste_embed(guild):
     abmeldungen = data.get("abmeldungen", {})
     embed = discord.Embed(
         title="Abmeldungs-Übersicht",
@@ -229,14 +229,17 @@ def build_abmeldung_liste_embed():
         embed.description = "*Aktuell ist niemand abgemeldet.*"
     else:
         for uid, info in abmeldungen.items():
+            member  = guild.get_member(int(uid))
+            name    = member.display_name if member else f"Unbekanntes Mitglied ({uid})"
+            mention = member.mention if member else f"<@{uid}>"
             typ       = info.get("typ", "kurzzeit")
             typ_label = "🕐 Langzeit" if typ == "langzeit" else "📅 Kurzzeit"
             von       = info.get("von", "-")
             bis       = info.get("bis", "-")
             grund     = info.get("grund", "-")
             embed.add_field(
-                name=f"<@{uid}>  ·  {typ_label}",
-                value=f"Von: **{von}**\nBis: **{bis}**\nGrund: {grund}",
+                name=f"{name}  ·  {typ_label}",
+                value=f"{mention}\nVon: **{von}**\nBis: **{bis}**\nGrund: {grund}",
                 inline=False
             )
     embed.set_footer(text="GUERILLA")
@@ -249,7 +252,7 @@ async def update_abmeldung_liste(guild):
     kanal = guild.get_channel(int(data["channel_abmeldung_liste"]))
     if not kanal:
         return
-    embed  = build_abmeldung_liste_embed()
+    embed  = build_abmeldung_liste_embed(guild)
     msg_id = data.get("abmeldung_liste_nachricht_id")
     if msg_id:
         try:
@@ -483,9 +486,13 @@ async def abmelden(interaction: discord.Interaction, von: str, bis: str, grund: 
             embed_abm.timestamp = datetime.now(TIMEZONE)
             await abm_kanal.send(embed=embed_abm)
 
-@tree.command(name="abmeldung_langzeit", description="Trägt eine unbefristete Langzeit-Abmeldung ein")
-@app_commands.describe(grund="Grund der Langzeit-Abmeldung")
-async def abmeldung_langzeit(interaction: discord.Interaction, grund: str):
+@tree.command(name="abmeldung_langzeit", description="Trägt eine Langzeit-Abmeldung ein (Zeitraum länger als eine Woche)")
+@app_commands.describe(
+    von="Von wann? (z.B. 14.07.2026)",
+    bis="Bis wann? (z.B. 25.08.2026)",
+    grund="Grund der Langzeit-Abmeldung"
+)
+async def abmeldung_langzeit(interaction: discord.Interaction, von: str, bis: str, grund: str):
     rolle_id = data.get("rolle_id")
     if rolle_id:
         rolle = interaction.guild.get_role(int(rolle_id))
@@ -496,7 +503,7 @@ async def abmeldung_langzeit(interaction: discord.Interaction, grund: str):
             return
 
     uid = str(interaction.user.id)
-    data["abmeldungen"][uid] = {"von": "unbefristet", "bis": "unbefristet", "grund": grund, "typ": "langzeit"}
+    data["abmeldungen"][uid] = {"von": von, "bis": bis, "grund": grund, "typ": "langzeit"}
     data["abstimmung"].pop(uid, None)
     save_data(data)
 
@@ -506,8 +513,9 @@ async def abmeldung_langzeit(interaction: discord.Interaction, grund: str):
 
     await interaction.response.send_message(
         f"✅ Langzeit-Abmeldung eingetragen!\n"
-        f"Du wirst in der Aufstellung als Abgemeldet angezeigt, bis ein Admin die "
-        f"Abmeldung mit **/abmeldung_loeschen** wieder entfernt.",
+        f"Von: **{von}**\n"
+        f"Bis: **{bis}**\n"
+        f"Du wirst in der Aufstellung als Abgemeldet angezeigt.",
         ephemeral=True
     )
 
@@ -516,8 +524,9 @@ async def abmeldung_langzeit(interaction: discord.Interaction, grund: str):
         if abm_kanal:
             embed_abm = discord.Embed(title="Neue Langzeit-Abmeldung", color=EMBED_COLOR)
             embed_abm.add_field(name="Mitglied", value=interaction.user.mention, inline=True)
-            embed_abm.add_field(name="Dauer",    value="Unbefristet",           inline=True)
-            embed_abm.add_field(name="Grund",    value=grund,                   inline=False)
+            embed_abm.add_field(name="Von",      value=von,                      inline=True)
+            embed_abm.add_field(name="Bis",      value=bis,                      inline=True)
+            embed_abm.add_field(name="Grund",    value=grund,                    inline=False)
             embed_abm.set_footer(text="GUERILLA")
             embed_abm.timestamp = datetime.now(TIMEZONE)
             await abm_kanal.send(embed=embed_abm)
