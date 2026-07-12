@@ -219,29 +219,57 @@ async def update_nachricht(guild):
         print(f"Fehler beim Update der Nachricht: {e}")
 
 # ─── ABMELDUNGS-ÜBERSICHT (persistente Liste) ────────────────────────────────
+def parse_datum(datum_str):
+    """Versucht ein Datum im Format TT.MM.JJJJ zu parsen, sonst None."""
+    try:
+        return datetime.strptime(str(datum_str).strip(), "%d.%m.%Y")
+    except Exception:
+        return None
+
 def build_abmeldung_liste_embed(guild):
     abmeldungen = data.get("abmeldungen", {})
     embed = discord.Embed(
         title="Abmeldungs-Übersicht",
         color=EMBED_COLOR
     )
+
     if not abmeldungen:
         embed.description = "*Aktuell ist niemand abgemeldet.*"
-    else:
-        for uid, info in abmeldungen.items():
-            member  = guild.get_member(int(uid))
-            name    = member.display_name if member else f"Unbekanntes Mitglied ({uid})"
-            mention = member.mention if member else f"<@{uid}>"
-            typ       = info.get("typ", "kurzzeit")
-            typ_label = "🕐 Langzeit" if typ == "langzeit" else "📅 Kurzzeit"
-            von       = info.get("von", "-")
-            bis       = info.get("bis", "-")
-            grund     = info.get("grund", "-")
-            embed.add_field(
-                name=f"{name}  ·  {typ_label}",
-                value=f"{mention}\nVon: **{von}**\nBis: **{bis}**\nGrund: {grund}",
-                inline=False
-            )
+        embed.set_footer(text="GUERILLA")
+        embed.timestamp = datetime.now(TIMEZONE)
+        return embed
+
+    # Sortierung: wer zuerst wieder zurück ist (frühestes "Bis"-Datum), steht oben.
+    # Nicht parsbare Daten landen ans Ende.
+    def sort_key(item):
+        _, info = item
+        parsed = parse_datum(info.get("bis", ""))
+        return (parsed is None, parsed or datetime.max)
+
+    sortierte_abmeldungen = sorted(abmeldungen.items(), key=sort_key)
+
+    bloecke = []
+    for uid, info in sortierte_abmeldungen:
+        member  = guild.get_member(int(uid))
+        name    = member.display_name if member else f"Unbekanntes Mitglied ({uid})"
+        mention = member.mention if member else f"<@{uid}>"
+
+        typ       = info.get("typ", "kurzzeit")
+        typ_label = "🕐 Langzeit" if typ == "langzeit" else "📅 Kurzzeit"
+        von       = info.get("von", "-")
+        bis       = info.get("bis", "-")
+        grund     = info.get("grund", "-")
+
+        block = (
+            f"### {name}  ·  {typ_label}\n"
+            f"{mention}\n\n"
+            f"**Von:** {von}\n"
+            f"**Bis:** {bis}\n"
+            f"**Grund:** {grund}"
+        )
+        bloecke.append(block)
+
+    embed.description = "\n\n━━━━━━━━━━━━━━━━━━━━\n\n".join(bloecke)
     embed.set_footer(text="GUERILLA")
     embed.timestamp = datetime.now(TIMEZONE)
     return embed
