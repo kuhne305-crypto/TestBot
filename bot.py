@@ -1,17 +1,13 @@
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 from discord import app_commands
-import asyncio
-from datetime import datetime, timedelta
-import pytz
 import json
 import os
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
 TOKEN = os.environ.get("DISCORD_TOKEN")
-GUILD_ID = os.environ.get("GUILD_ID")  # <-- NEU: deine Server-ID hier als Railway Variable eintragen!
-TIMEZONE = pytz.timezone("Europe/Berlin")
-EMBED_COLOR = 0xF5F5DC  # Beige
+GUILD_ID = os.environ.get("GUILD_ID")  # deine Server-ID als Railway Variable
+EMBED_COLOR = 0x5865F2  # Discord Blurple (neutral)
 DATA_FILE = "data.json"
 
 # ─── DATA HANDLER ─────────────────────────────────────────────────────────────
@@ -20,17 +16,9 @@ def load_data():
         with open(DATA_FILE, "r") as f:
             return json.load(f)
     return {
-        "rolle_id": None,
-        "aktuelle_nachricht_id": None,
-        "abstimmung": {},
-        "abmeldungen": {},
-        "eingefroren": False,
-        "aktuelles_datum": None,
-        "channel_aufstellung": None,
-        "channel_archiv": None,
-        "channel_abmeldung": None,
-        "channel_abmeldung_liste": None,
-        "abmeldung_liste_nachricht_id": None
+        "familien": {},                    # { "blau": {"passwort": "blau", "rolle_id": "123"} }
+        "verifizierung_channel": None,
+        "verifizierung_nachricht_id": None
     }
 
 def save_data(data):
@@ -42,546 +30,336 @@ data = load_data()
 # ─── BOT SETUP ────────────────────────────────────────────────────────────────
 intents = discord.Intents.default()
 intents.members = True
-intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 
-# ─── HILFSFUNKTIONEN ──────────────────────────────────────────────────────────
-def get_morgen_datum():
-    now = datetime.now(TIMEZONE)
-    morgen = now + timedelta(days=1)
-    wochentage = ["Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag","Sonntag"]
-    return f"{wochentage[morgen.weekday()]}, {morgen.strftime('%d.%m.%Y')}"
-
-def get_heute_datum():
-    now = datetime.now(TIMEZONE)
-    wochentage = ["Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag","Sonntag"]
-    return f"{wochentage[now.weekday()]}, {now.strftime('%d.%m.%Y')}"
-
-async def get_rolle_mitglieder(guild):
-    rolle_id = data.get("rolle_id")
-    if not rolle_id:
-        return []
-    rolle = guild.get_role(int(rolle_id))
-    if not rolle:
-        return []
-    return [m for m in rolle.members if not m.bot]
-
-def build_embed(datum, mitglieder, eingefroren=False):
-    abstimmung  = data.get("abstimmung", {})
-    abmeldungen = data.get("abmeldungen", {})
-
-    ja_liste        = []
-    spaeter_liste   = []
-    nein_liste      = []
-    abgemeldet_liste= []
-    offen_liste     = []
-
-    for m in mitglieder:
-        uid     = str(m.id)
-        mention = m.mention
-        if uid in abmeldungen:
-            abgemeldet_liste.append(mention)
-        elif uid in abstimmung:
-            status = abstimmung[uid]
-            if status == "ja":
-                ja_liste.append(mention)
-            elif status == "spaeter":
-                spaeter_liste.append(mention)
-            elif status == "nein":
-                nein_liste.append(mention)
-        else:
-            offen_liste.append(mention)
-
-    titel = "Aufstellung"
-    if eingefroren:
-        titel += " *(Eingefroren)*"
-
+# ─── EMBED & VIEW BUILDER ─────────────────────────────────────────────────────
+def build_familien_embed():
     embed = discord.Embed(
-        title=titel,
+        title="Familien-Auswahl",
         description=(
-            f"**{datum}**\n"
-            f"Aufstellung: **21:00 Uhr**\n"
-            f"{'🔒 Abstimmung geschlossen!' if eingefroren else '✅ Jetzt abstimmen!'}"
+            "Wähle deine Familie aus, um Zugriff auf die passenden Channels zu bekommen.\n"
+            "Klick auf den passenden Button und trag deinen Namen sowie das Passwort deiner Familie ein."
         ),
         color=EMBED_COLOR
     )
-
-    embed.add_field(
-        name=f"Komme ({len(ja_liste)})",
-        value="\n".join(ja_liste) if ja_liste else "*Niemand*",
-        inline=True
-    )
-    embed.add_field(
-        name=f"Komme später ({len(spaeter_liste)})",
-        value="\n".join(spaeter_liste) if spaeter_liste else "*Niemand*",
-        inline=True
-    )
-    embed.add_field(
-        name=f"Komme nicht ({len(nein_liste)})",
-        value="\n".join(nein_liste) if nein_liste else "*Niemand*",
-        inline=True
-    )
-    embed.add_field(
-        name=f"Abgemeldet ({len(abgemeldet_liste)})",
-        value="\n".join(abgemeldet_liste) if abgemeldet_liste else "*Niemand*",
-        inline=True
-    )
-
-    if offen_liste:
-        label = "Nicht gemeldet" if eingefroren else "Noch nicht abgestimmt"
+    if not data["familien"]:
         embed.add_field(
-            name=f"{label} ({len(offen_liste)})",
-            value="\n".join(offen_liste),
+            name="Noch keine Familien eingerichtet",
+            value="Ein Admin muss zuerst /familie_hinzufuegen benutzen.",
             inline=False
         )
-
-    embed.set_footer(text="GUERILLA")
-    embed.timestamp = datetime.now(TIMEZONE)
+    else:
+        namen = ", ".join(name.capitalize() for name in data["familien"].keys())
+        embed.add_field(name="Verfügbare Familien", value=namen, inline=False)
+    embed.set_footer(text="Verifizierung")
     return embed
 
-# ─── VIEWS (BUTTONS) ──────────────────────────────────────────────────────────
-class AufstellungView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    async def check_berechtigung(self, interaction: discord.Interaction):
-        if data.get("eingefroren"):
-            await interaction.response.send_message(
-                "Die Abstimmung ist bereits geschlossen!", ephemeral=True
-            )
-            return False
-        rolle_id = data.get("rolle_id")
-        if not rolle_id:
-            await interaction.response.send_message(
-                "Keine Rolle gesetzt. Admin: /setrolle benutzen.", ephemeral=True
-            )
-            return False
-        rolle = interaction.guild.get_role(int(rolle_id))
-        if rolle not in interaction.user.roles:
-            await interaction.response.send_message(
-                "Du hast keine Berechtigung für diese Abstimmung.", ephemeral=True
-            )
-            return False
-        return True
-
-    @discord.ui.button(label="Komme", style=discord.ButtonStyle.success, custom_id="btn_ja")
-    async def btn_ja(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await self.check_berechtigung(interaction):
-            return
-        data["abstimmung"][str(interaction.user.id)] = "ja"
-        hatte_abmeldung = data["abmeldungen"].pop(str(interaction.user.id), None)
-        save_data(data)
-        await update_nachricht(interaction.guild)
-        if hatte_abmeldung:
-            await update_abmeldung_liste(interaction.guild)
-        await interaction.response.send_message("Du hast mit **Komme** abgestimmt!", ephemeral=True)
-
-    @discord.ui.button(label="Komme später", style=discord.ButtonStyle.secondary, custom_id="btn_spaeter")
-    async def btn_spaeter(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await self.check_berechtigung(interaction):
-            return
-        data["abstimmung"][str(interaction.user.id)] = "spaeter"
-        hatte_abmeldung = data["abmeldungen"].pop(str(interaction.user.id), None)
-        save_data(data)
-        await update_nachricht(interaction.guild)
-        if hatte_abmeldung:
-            await update_abmeldung_liste(interaction.guild)
-        await interaction.response.send_message("Du hast mit **Komme später** abgestimmt!", ephemeral=True)
-
-    @discord.ui.button(label="Komme nicht", style=discord.ButtonStyle.danger, custom_id="btn_nein")
-    async def btn_nein(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await self.check_berechtigung(interaction):
-            return
-        data["abstimmung"][str(interaction.user.id)] = "nein"
-        hatte_abmeldung = data["abmeldungen"].pop(str(interaction.user.id), None)
-        save_data(data)
-        await update_nachricht(interaction.guild)
-        if hatte_abmeldung:
-            await update_abmeldung_liste(interaction.guild)
-        await interaction.response.send_message("Du hast mit **Komme nicht** abgestimmt!", ephemeral=True)
-
-async def update_nachricht(guild):
-    msg_id = data.get("aktuelle_nachricht_id")
-    if not msg_id or not data.get("channel_aufstellung"):
+async def familie_button_callback(interaction: discord.Interaction):
+    custom_id = interaction.data["custom_id"]
+    familie_key = custom_id.split("::", 1)[1]
+    if familie_key not in data["familien"]:
+        await interaction.response.send_message("❌ Diese Familie existiert nicht mehr.", ephemeral=True)
         return
-    kanal = guild.get_channel(int(data["channel_aufstellung"]))
-    if not kanal:
-        return
-    try:
-        msg        = await kanal.fetch_message(int(msg_id))
-        mitglieder = await get_rolle_mitglieder(guild)
-        datum      = data.get("aktuelles_datum", get_morgen_datum())
-        embed      = build_embed(datum, mitglieder, data.get("eingefroren", False))
-        await msg.edit(embed=embed)
-    except Exception as e:
-        print(f"Fehler beim Update der Nachricht: {e}")
+    modal = FamilieModal(familie_key)
+    await interaction.response.send_modal(modal)
 
-# ─── ABMELDUNGS-ÜBERSICHT (persistente Liste) ────────────────────────────────
-def parse_datum(datum_str):
-    """Versucht ein Datum im Format TT.MM.JJJJ zu parsen, sonst None."""
-    try:
-        return datetime.strptime(str(datum_str).strip(), "%d.%m.%Y")
-    except Exception:
-        return None
-
-def build_abmeldung_liste_embed(guild):
-    abmeldungen = data.get("abmeldungen", {})
-    embed = discord.Embed(
-        title="Abmeldungs-Übersicht",
-        color=EMBED_COLOR
-    )
-
-    if not abmeldungen:
-        embed.description = "*Aktuell ist niemand abgemeldet.*"
-        embed.set_footer(text="GUERILLA")
-        embed.timestamp = datetime.now(TIMEZONE)
-        return embed
-
-    # Sortierung: wer zuerst wieder zurück ist (frühestes "Bis"-Datum), steht oben.
-    # Nicht parsbare Daten landen ans Ende.
-    def sort_key(item):
-        _, info = item
-        parsed = parse_datum(info.get("bis", ""))
-        return (parsed is None, parsed or datetime.max)
-
-    sortierte_abmeldungen = sorted(abmeldungen.items(), key=sort_key)
-
-    bloecke = []
-    for uid, info in sortierte_abmeldungen:
-        member  = guild.get_member(int(uid))
-        name    = member.display_name if member else f"Unbekanntes Mitglied ({uid})"
-        mention = member.mention if member else f"<@{uid}>"
-
-        typ       = info.get("typ", "kurzzeit")
-        typ_label = "🕐 Langzeit" if typ == "langzeit" else "📅 Kurzzeit"
-        von       = info.get("von", "-")
-        bis       = info.get("bis", "-")
-        grund     = info.get("grund", "-")
-
-        block = (
-            f"{mention}  ·  {typ_label}\n"
-            f"Von: **{von}**  Bis: **{bis}**  Grund: {grund}"
+def build_familien_view():
+    view = discord.ui.View(timeout=None)
+    styles = [
+        discord.ButtonStyle.primary,
+        discord.ButtonStyle.success,
+        discord.ButtonStyle.danger,
+        discord.ButtonStyle.secondary,
+    ]
+    for i, name in enumerate(data["familien"].keys()):
+        button = discord.ui.Button(
+            label=name.capitalize(),
+            style=styles[i % len(styles)],
+            custom_id=f"familie_btn::{name}"
         )
-        bloecke.append(block)
+        button.callback = familie_button_callback
+        view.add_item(button)
+    return view
 
-    embed.description = "\n\n━━━━━━━━━━━━━━━━━━━━\n\n".join(bloecke)
-    embed.set_footer(text="GUERILLA")
-    embed.timestamp = datetime.now(TIMEZONE)
-    return embed
+# ─── MODAL (Name + Passwort Eingabe) ──────────────────────────────────────────
+class FamilieModal(discord.ui.Modal):
+    def __init__(self, familie_key: str):
+        super().__init__(title=f"Familie {familie_key.capitalize()}")
+        self.familie_key = familie_key
+        self.name_input = discord.ui.TextInput(
+            label="Dein Name (Vorname Nachname)",
+            placeholder="Max Mustermann",
+            required=True,
+            max_length=32
+        )
+        self.passwort_input = discord.ui.TextInput(
+            label="Passwort der Familie",
+            placeholder="Passwort eingeben",
+            required=True,
+            max_length=64
+        )
+        self.add_item(self.name_input)
+        self.add_item(self.passwort_input)
 
-async def update_abmeldung_liste(guild):
-    if not data.get("channel_abmeldung_liste"):
+    async def on_submit(self, interaction: discord.Interaction):
+        familie = data["familien"].get(self.familie_key)
+        if not familie:
+            await interaction.response.send_message("❌ Diese Familie existiert nicht mehr.", ephemeral=True)
+            return
+
+        eingegeben = self.passwort_input.value.strip()
+        korrekt    = familie["passwort"]
+
+        if eingegeben.lower() != korrekt.lower():
+            await interaction.response.send_message(
+                "❌ Falsches Passwort. Klick einfach nochmal auf den Button und versuch's erneut.",
+                ephemeral=True
+            )
+            return
+
+        rolle = interaction.guild.get_role(int(familie["rolle_id"]))
+        if not rolle:
+            await interaction.response.send_message(
+                "❌ Die Rolle für diese Familie wurde nicht gefunden. Bitte einen Admin kontaktieren.",
+                ephemeral=True
+            )
+            return
+
+        member = interaction.user
+
+        # Alte Familien-Rolle entfernen, falls jemand die Familie wechselt
+        alle_familien_rollen_ids = {int(f["rolle_id"]) for f in data["familien"].values()}
+        alte_rollen = [r for r in member.roles if r.id in alle_familien_rollen_ids and r.id != rolle.id]
+        if alte_rollen:
+            try:
+                await member.remove_roles(*alte_rollen)
+            except discord.Forbidden:
+                pass
+
+        try:
+            await member.add_roles(rolle)
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "❌ Ich habe keine Berechtigung, dir diese Rolle zu geben. Bitte einen Admin kontaktieren "
+                "(meine Bot-Rolle muss über der Familien-Rolle stehen).",
+                ephemeral=True
+            )
+            return
+
+        name_eingabe = self.name_input.value.strip()
+        nickname_fehler = False
+        try:
+            await member.edit(nick=name_eingabe)
+        except discord.Forbidden:
+            nickname_fehler = True
+
+        antwort = f"✅ Willkommen bei **{self.familie_key.capitalize()}**! Du hast jetzt Zugriff auf die passenden Channels."
+        if nickname_fehler:
+            antwort += "\n⚠️ Dein Nickname konnte nicht automatisch geändert werden (fehlende Berechtigung, z.B. bei Server-Owner)."
+
+        await interaction.response.send_message(antwort, ephemeral=True)
+
+# ─── VERIFIZIERUNGS-NACHRICHT POSTEN / AKTUALISIEREN ─────────────────────────
+async def verifizierung_posten_intern(guild):
+    if not data.get("verifizierung_channel"):
         return
-    kanal = guild.get_channel(int(data["channel_abmeldung_liste"]))
+    kanal = guild.get_channel(int(data["verifizierung_channel"]))
     if not kanal:
         return
-    embed  = build_abmeldung_liste_embed(guild)
-    msg_id = data.get("abmeldung_liste_nachricht_id")
+
+    embed = build_familien_embed()
+    view  = build_familien_view()
+
+    msg_id = data.get("verifizierung_nachricht_id")
     if msg_id:
         try:
             msg = await kanal.fetch_message(int(msg_id))
-            await msg.edit(embed=embed)
+            await msg.edit(embed=embed, view=view)
+            bot.add_view(view, message_id=msg.id)
             return
         except Exception as e:
-            print(f"Abmeldungs-Liste Nachricht nicht gefunden, poste neu: {e}")
-    msg = await kanal.send(embed=embed)
-    data["abmeldung_liste_nachricht_id"] = str(msg.id)
+            print(f"Alte Verifizierungs-Nachricht nicht gefunden, poste neu: {e}")
+
+    msg = await kanal.send(embed=embed, view=view)
+    data["verifizierung_nachricht_id"] = str(msg.id)
     save_data(data)
-
-# ─── NEUE ABSTIMMUNG POSTEN ───────────────────────────────────────────────────
-async def neue_abstimmung_posten(guild, manual_channel=None):
-    if manual_channel:
-        kanal = manual_channel
-    elif data.get("channel_aufstellung"):
-        kanal = guild.get_channel(int(data["channel_aufstellung"]))
-    else:
-        print("Kein Aufstellungs-Channel gesetzt! Bitte /set_aufstellung benutzen.")
-        return
-
-    if not kanal:
-        print("Aufstellungs-Channel nicht gefunden!")
-        return
-
-    datum = get_morgen_datum()
-    data["abstimmung"]      = {}
-    data["eingefroren"]     = False
-    data["aktuelles_datum"] = datum
-
-    mitglieder = await get_rolle_mitglieder(guild)
-
-    embed = build_embed(datum, mitglieder, eingefroren=False)
-    view  = AufstellungView()
-
-    rolle_id = data.get("rolle_id")
-    ping_text = None
-    if rolle_id:
-        rolle = guild.get_role(int(rolle_id))
-        if rolle:
-            ping_text = rolle.mention
-
-    msg = await kanal.send(content=ping_text, embed=embed, view=view)
-    data["aktuelle_nachricht_id"] = str(msg.id)
-    save_data(data)
-    print(f"Neue Abstimmung gepostet für {datum}")
-
-# ─── ABSTIMMUNG EINFRIEREN & ARCHIVIEREN ─────────────────────────────────────
-async def abstimmung_einfrieren(guild):
-    data["eingefroren"] = True
-    save_data(data)
-
-    mitglieder = await get_rolle_mitglieder(guild)
-    datum      = data.get("aktuelles_datum", get_heute_datum())
-
-    if data.get("channel_aufstellung"):
-        kanal  = guild.get_channel(int(data["channel_aufstellung"]))
-        msg_id = data.get("aktuelle_nachricht_id")
-        if kanal and msg_id:
-            try:
-                msg   = await kanal.fetch_message(int(msg_id))
-                embed = build_embed(datum, mitglieder, eingefroren=True)
-                await msg.edit(embed=embed, view=None)
-            except Exception as e:
-                print(f"Fehler beim Einfrieren: {e}")
-
-    if data.get("channel_archiv"):
-        archiv = guild.get_channel(int(data["channel_archiv"]))
-        if archiv:
-            embed_archiv       = build_embed(datum, mitglieder, eingefroren=True)
-            embed_archiv.title = f"ARCHIV – {embed_archiv.title}"
-            await archiv.send(embed=embed_archiv)
-            print(f"Abstimmung archiviert für {datum}")
-
-# ─── TASKS ────────────────────────────────────────────────────────────────────
-@tasks.loop(minutes=1)
-async def check_zeit():
-    now = datetime.now(TIMEZONE)
-    h, m = now.hour, now.minute
-
-    if h == 23 and m == 59:
-        for guild in bot.guilds:
-            await neue_abstimmung_posten(guild)
-        await asyncio.sleep(61)
-
-    if h == 21 and m == 0 and not data.get("eingefroren", False):
-        for guild in bot.guilds:
-            await abstimmung_einfrieren(guild)
-        await asyncio.sleep(61)
+    bot.add_view(view, message_id=msg.id)
 
 # ─── SLASH COMMANDS ───────────────────────────────────────────────────────────
 
-@tree.command(name="setrolle", description="Setzt die Rolle die an der Aufstellung teilnimmt")
-@app_commands.describe(rolle="Die Rolle die gepingt und abgestimmt werden soll")
+@tree.command(name="familie_hinzufuegen", description="Erstellt eine neue Familie: Rolle + Kategorie + Channels (Chat, Mitglieder, Infos)")
+@app_commands.describe(
+    name="Name der Familie (z.B. Rot, Blau)",
+    passwort="Passwort für diese Familie"
+)
 @app_commands.checks.has_permissions(administrator=True)
-async def setrolle(interaction: discord.Interaction, rolle: discord.Role):
-    data["rolle_id"] = str(rolle.id)
-    save_data(data)
-    await interaction.response.send_message(
-        f"✅ Rolle **{rolle.name}** wurde gesetzt.\n"
-        f"Diese Rolle wird bei jeder Abstimmung gepingt.",
-        ephemeral=True
-    )
-
-@tree.command(name="set_aufstellung", description="Setzt den Channel für die Aufstellungs-Abstimmung")
-@app_commands.describe(channel="Der Channel wo die Abstimmung gepostet wird")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_aufstellung(interaction: discord.Interaction, channel: discord.TextChannel):
-    data["channel_aufstellung"] = channel.id
-    save_data(data)
-    await interaction.response.send_message(
-        f"✅ Aufstellungs-Channel gesetzt: {channel.mention}", ephemeral=True
-    )
-
-@tree.command(name="set_archiv", description="Setzt den Channel für das Aufstellungs-Archiv")
-@app_commands.describe(channel="Der Channel wo die archivierten Abstimmungen landen")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_archiv(interaction: discord.Interaction, channel: discord.TextChannel):
-    data["channel_archiv"] = channel.id
-    save_data(data)
-    await interaction.response.send_message(
-        f"✅ Archiv-Channel gesetzt: {channel.mention}", ephemeral=True
-    )
-
-@tree.command(name="set_abmeldung", description="Setzt den Channel für Abmeldungen")
-@app_commands.describe(channel="Der Channel wo Abmeldungen gepostet werden")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_abmeldung(interaction: discord.Interaction, channel: discord.TextChannel):
-    data["channel_abmeldung"] = channel.id
-    save_data(data)
-    await interaction.response.send_message(
-        f"✅ Abmeldungs-Channel gesetzt: {channel.mention}", ephemeral=True
-    )
-
-@tree.command(name="set_abmeldung_liste", description="Setzt den Channel für die Abmeldungs-Übersicht (Live-Liste)")
-@app_commands.describe(channel="Der Channel wo die aktuelle Übersicht aller Abmeldungen als Liste gepostet wird")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_abmeldung_liste(interaction: discord.Interaction, channel: discord.TextChannel):
-    data["channel_abmeldung_liste"] = channel.id
-    data["abmeldung_liste_nachricht_id"] = None
-    save_data(data)
-    await interaction.response.send_message(
-        f"✅ Abmeldungs-Übersicht-Channel gesetzt: {channel.mention}", ephemeral=True
-    )
-    await update_abmeldung_liste(interaction.guild)
-
-@tree.command(name="channels", description="Zeigt alle aktuell gesetzten Channels und die Rolle")
-@app_commands.checks.has_permissions(administrator=True)
-async def channels_info(interaction: discord.Interaction):
-    auf   = interaction.guild.get_channel(int(data["channel_aufstellung"]))      if data.get("channel_aufstellung")      else None
-    arch  = interaction.guild.get_channel(int(data["channel_archiv"]))           if data.get("channel_archiv")           else None
-    abm   = interaction.guild.get_channel(int(data["channel_abmeldung"]))        if data.get("channel_abmeldung")        else None
-    liste = interaction.guild.get_channel(int(data["channel_abmeldung_liste"]))  if data.get("channel_abmeldung_liste")  else None
-    rolle_id = data.get("rolle_id")
-    rolle = interaction.guild.get_role(int(rolle_id)) if rolle_id else None
-
-    await interaction.response.send_message(
-        f"**Aktuelle Einstellungen:**\n\n"
-        f"Rolle:              {rolle.mention  if rolle  else '❌ Nicht gesetzt – /setrolle benutzen'}\n"
-        f"Aufstellung:        {auf.mention    if auf    else '❌ Nicht gesetzt – /set_aufstellung benutzen'}\n"
-        f"Archiv:             {arch.mention   if arch   else '❌ Nicht gesetzt – /set_archiv benutzen'}\n"
-        f"Abmeldung:          {abm.mention    if abm    else '❌ Nicht gesetzt – /set_abmeldung benutzen'}\n"
-        f"Abmeldungs-Liste:   {liste.mention  if liste  else '❌ Nicht gesetzt – /set_abmeldung_liste benutzen'}",
-        ephemeral=True
-    )
-
-@tree.command(name="abstimmung", description="Postet manuell eine neue Aufstellungs-Abstimmung")
-@app_commands.checks.has_permissions(administrator=True)
-async def abstimmung_manuell(interaction: discord.Interaction):
-    if not data.get("channel_aufstellung"):
+async def familie_hinzufuegen(interaction: discord.Interaction, name: str, passwort: str):
+    key = name.strip().lower()
+    if key in data["familien"]:
         await interaction.response.send_message(
-            "❌ Kein Aufstellungs-Channel gesetzt!\nBitte zuerst **/set_aufstellung #channel** benutzen.",
+            f"❌ Familie **{name}** existiert bereits.\n"
+            f"Nutze **/familie_entfernen** falls du sie komplett neu aufsetzen willst.",
             ephemeral=True
         )
         return
-    await interaction.response.send_message("Erstelle neue Abstimmung...", ephemeral=True)
-    await neue_abstimmung_posten(interaction.guild)
-    await interaction.edit_original_response(content="✅ Neue Abstimmung wurde gepostet!")
 
-@tree.command(name="status", description="Zeigt den aktuellen Abstimmungsstand")
-@app_commands.checks.has_permissions(administrator=True)
-async def status(interaction: discord.Interaction):
-    mitglieder = await get_rolle_mitglieder(interaction.guild)
-    datum      = data.get("aktuelles_datum", get_morgen_datum())
-    embed      = build_embed(datum, mitglieder, data.get("eingefroren", False))
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    # Rolle-/Kategorie-/Channel-Erstellung kann länger als 3 Sekunden dauern
+    await interaction.response.defer(ephemeral=True)
 
-@tree.command(name="abmelden", description="Melde dich von der Aufstellung ab")
-@app_commands.describe(
-    von="Von wann? (z.B. 14.07.2026)",
-    bis="Bis wann? (z.B. 16.07.2026)",
-    grund="Grund (intern, nicht öffentlich sichtbar)"
-)
-async def abmelden(interaction: discord.Interaction, von: str, bis: str, grund: str):
-    rolle_id = data.get("rolle_id")
-    if rolle_id:
-        rolle = interaction.guild.get_role(int(rolle_id))
-        if rolle and rolle not in interaction.user.roles:
-            await interaction.response.send_message(
-                "Du hast keine Berechtigung zur Abmeldung.", ephemeral=True
-            )
-            return
+    guild = interaction.guild
 
-    uid = str(interaction.user.id)
-    data["abmeldungen"][uid] = {"von": von, "bis": bis, "grund": grund, "typ": "kurzzeit"}
-    data["abstimmung"].pop(uid, None)
+    try:
+        rolle = await guild.create_role(
+            name=f"Familie {name.capitalize()}",
+            mentionable=True,
+            reason=f"Familie {name} angelegt via /familie_hinzufuegen"
+        )
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            rolle:               discord.PermissionOverwrite(view_channel=True),
+            guild.me:            discord.PermissionOverwrite(view_channel=True),
+        }
+
+        kategorie = await guild.create_category(
+            name=f"Familie {name.capitalize()}",
+            overwrites=overwrites,
+            reason=f"Familie {name} angelegt"
+        )
+
+        chat_ch       = await guild.create_text_channel("chat",       category=kategorie, overwrites=overwrites)
+        mitglieder_ch = await guild.create_text_channel("mitglieder", category=kategorie, overwrites=overwrites)
+        infos_ch      = await guild.create_text_channel("infos",      category=kategorie, overwrites=overwrites)
+
+    except discord.Forbidden:
+        await interaction.followup.send(
+            "❌ Mir fehlen die Berechtigungen um Rollen/Kategorien/Channels zu erstellen.\n"
+            "Der Bot braucht **Manage Roles** und **Manage Channels**.",
+            ephemeral=True
+        )
+        return
+
+    data["familien"][key] = {
+        "passwort": passwort.strip(),
+        "rolle_id": str(rolle.id),
+        "kategorie_id": str(kategorie.id),
+        "channels": {
+            "chat": str(chat_ch.id),
+            "mitglieder": str(mitglieder_ch.id),
+            "infos": str(infos_ch.id),
+        }
+    }
     save_data(data)
 
-    if not data.get("eingefroren"):
-        await update_nachricht(interaction.guild)
-    await update_abmeldung_liste(interaction.guild)
-
-    await interaction.response.send_message(
-        f"✅ Abmeldung eingetragen!\n"
-        f"Von: **{von}**\n"
-        f"Bis: **{bis}**\n"
-        f"Du wirst in der Aufstellung als Abgemeldet angezeigt.",
+    await interaction.followup.send(
+        f"✅ Familie **{name}** komplett eingerichtet!\n\n"
+        f"**Rolle:** {rolle.mention}\n"
+        f"**Kategorie:** {kategorie.name}\n"
+        f"**Channels:** {chat_ch.mention}, {mitglieder_ch.mention}, {infos_ch.mention}\n\n"
+        f"Nicht vergessen: **/verifizierung_posten** benutzen, damit der neue Button auftaucht!",
         ephemeral=True
     )
 
-    if data.get("channel_abmeldung"):
-        abm_kanal = interaction.guild.get_channel(int(data["channel_abmeldung"]))
-        if abm_kanal:
-            embed_abm = discord.Embed(title="Neue Abmeldung", color=EMBED_COLOR)
-            embed_abm.add_field(name="Mitglied", value=interaction.user.mention, inline=True)
-            embed_abm.add_field(name="Von",      value=von,                      inline=True)
-            embed_abm.add_field(name="Bis",      value=bis,                      inline=True)
-            embed_abm.add_field(name="Grund",    value=grund,                    inline=False)
-            embed_abm.set_footer(text="GUERILLA")
-            embed_abm.timestamp = datetime.now(TIMEZONE)
-            await abm_kanal.send(embed=embed_abm)
+@tree.command(name="familie_entfernen", description="Entfernt eine Familie inkl. Rolle, Kategorie und Channels")
+@app_commands.describe(name="Name der Familie die entfernt werden soll")
+@app_commands.checks.has_permissions(administrator=True)
+async def familie_entfernen(interaction: discord.Interaction, name: str):
+    key = name.strip().lower()
+    if key not in data["familien"]:
+        await interaction.response.send_message(f"❌ Familie **{name}** existiert nicht.", ephemeral=True)
+        return
 
-@tree.command(name="abmeldung_langzeit", description="Trägt eine Langzeit-Abmeldung ein (Zeitraum länger als eine Woche)")
-@app_commands.describe(
-    von="Von wann? (z.B. 14.07.2026)",
-    bis="Bis wann? (z.B. 25.08.2026)",
-    grund="Grund der Langzeit-Abmeldung"
-)
-async def abmeldung_langzeit(interaction: discord.Interaction, von: str, bis: str, grund: str):
-    rolle_id = data.get("rolle_id")
-    if rolle_id:
-        rolle = interaction.guild.get_role(int(rolle_id))
-        if rolle and rolle not in interaction.user.roles:
-            await interaction.response.send_message(
-                "Du hast keine Berechtigung zur Abmeldung.", ephemeral=True
-            )
-            return
+    await interaction.response.defer(ephemeral=True)
+    guild  = interaction.guild
+    info   = data["familien"][key]
 
-    uid = str(interaction.user.id)
-    data["abmeldungen"][uid] = {"von": von, "bis": bis, "grund": grund, "typ": "langzeit"}
-    data["abstimmung"].pop(uid, None)
+    # Channels löschen
+    for channel_id in info.get("channels", {}).values():
+        kanal = guild.get_channel(int(channel_id))
+        if kanal:
+            try:
+                await kanal.delete(reason=f"Familie {name} entfernt")
+            except discord.Forbidden:
+                pass
+
+    # Kategorie löschen
+    kategorie_id = info.get("kategorie_id")
+    if kategorie_id:
+        kategorie = guild.get_channel(int(kategorie_id))
+        if kategorie:
+            try:
+                await kategorie.delete(reason=f"Familie {name} entfernt")
+            except discord.Forbidden:
+                pass
+
+    # Rolle löschen
+    rolle = guild.get_role(int(info["rolle_id"]))
+    if rolle:
+        try:
+            await rolle.delete(reason=f"Familie {name} entfernt")
+        except discord.Forbidden:
+            pass
+
+    del data["familien"][key]
     save_data(data)
 
-    if not data.get("eingefroren"):
-        await update_nachricht(interaction.guild)
-    await update_abmeldung_liste(interaction.guild)
-
-    await interaction.response.send_message(
-        f"✅ Langzeit-Abmeldung eingetragen!\n"
-        f"Von: **{von}**\n"
-        f"Bis: **{bis}**\n"
-        f"Du wirst in der Aufstellung als Abgemeldet angezeigt.",
+    await interaction.followup.send(
+        f"✅ Familie **{name}** komplett entfernt (Rolle, Kategorie und Channels gelöscht).\n"
+        f"Nicht vergessen: **/verifizierung_posten** benutzen, damit der Button verschwindet!",
         ephemeral=True
     )
 
-    if data.get("channel_abmeldung"):
-        abm_kanal = interaction.guild.get_channel(int(data["channel_abmeldung"]))
-        if abm_kanal:
-            embed_abm = discord.Embed(title="Neue Langzeit-Abmeldung", color=EMBED_COLOR)
-            embed_abm.add_field(name="Mitglied", value=interaction.user.mention, inline=True)
-            embed_abm.add_field(name="Von",      value=von,                      inline=True)
-            embed_abm.add_field(name="Bis",      value=bis,                      inline=True)
-            embed_abm.add_field(name="Grund",    value=grund,                    inline=False)
-            embed_abm.set_footer(text="GUERILLA")
-            embed_abm.timestamp = datetime.now(TIMEZONE)
-            await abm_kanal.send(embed=embed_abm)
-
-@tree.command(name="abmeldung_loeschen", description="Entfernt die Abmeldung eines Mitglieds")
-@app_commands.describe(mitglied="Das Mitglied dessen Abmeldung entfernt werden soll")
+@tree.command(name="familien", description="Zeigt alle eingerichteten Familien")
 @app_commands.checks.has_permissions(administrator=True)
-async def abmeldung_loeschen(interaction: discord.Interaction, mitglied: discord.Member):
-    uid = str(mitglied.id)
-    if uid in data["abmeldungen"]:
-        del data["abmeldungen"][uid]
-        save_data(data)
-        await update_nachricht(interaction.guild)
-        await update_abmeldung_liste(interaction.guild)
-        await interaction.response.send_message(
-            f"✅ Abmeldung von **{mitglied.display_name}** entfernt.", ephemeral=True
+async def familien_liste(interaction: discord.Interaction):
+    if not data["familien"]:
+        await interaction.response.send_message("❌ Noch keine Familien eingerichtet.", ephemeral=True)
+        return
+    zeilen = []
+    for key, info in data["familien"].items():
+        rolle     = interaction.guild.get_role(int(info["rolle_id"]))
+        kategorie = interaction.guild.get_channel(int(info["kategorie_id"])) if info.get("kategorie_id") else None
+        zeilen.append(
+            f"**{key.capitalize()}** — Passwort: `{info['passwort']}` — "
+            f"Rolle: {rolle.mention if rolle else '❌ nicht gefunden'} — "
+            f"Kategorie: {kategorie.name if kategorie else '❌ nicht gefunden'}"
         )
-    else:
+    await interaction.response.send_message("\n".join(zeilen), ephemeral=True)
+
+@tree.command(name="set_verifizierung_channel", description="Setzt den Channel für die Familien-Auswahl-Nachricht")
+@app_commands.describe(channel="Der Channel wo neue Mitglieder ihre Familie auswählen")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_verifizierung_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    data["verifizierung_channel"] = channel.id
+    data["verifizierung_nachricht_id"] = None
+    save_data(data)
+    await interaction.response.send_message(f"✅ Verifizierungs-Channel gesetzt: {channel.mention}", ephemeral=True)
+    await verifizierung_posten_intern(interaction.guild)
+
+@tree.command(name="verifizierung_posten", description="Postet oder aktualisiert die Familien-Auswahl-Nachricht")
+@app_commands.checks.has_permissions(administrator=True)
+async def verifizierung_posten(interaction: discord.Interaction):
+    if not data.get("verifizierung_channel"):
         await interaction.response.send_message(
-            f"❌ **{mitglied.display_name}** hat keine aktive Abmeldung.", ephemeral=True
+            "❌ Kein Verifizierungs-Channel gesetzt!\nBitte zuerst **/set_verifizierung_channel #channel** benutzen.",
+            ephemeral=True
         )
+        return
+    await verifizierung_posten_intern(interaction.guild)
+    await interaction.response.send_message("✅ Familien-Auswahl-Nachricht gepostet/aktualisiert.", ephemeral=True)
 
 # ─── BOT EVENTS ───────────────────────────────────────────────────────────────
 @bot.event
 async def on_ready():
     print(f"Bot online: {bot.user}")
 
-    # ── SYNC MIT LOGGING (NEU) ─────────────────────────────────────────────
-    # Guild-Sync = SOFORT sichtbar (nur auf deinem Server, super zum Testen)
-    # Global-Sync = kann bis zu 1h dauern, dafür auf allen Servern
+    # Bestehende Familien-Buttons als persistent registrieren, damit sie nach
+    # einem Neustart weiter funktionieren
+    if data.get("familien"):
+        bot.add_view(build_familien_view())
+
     try:
         if GUILD_ID:
             guild_obj = discord.Object(id=int(GUILD_ID))
@@ -595,11 +373,8 @@ async def on_ready():
         print(f"✅ {len(synced_global)} Commands global gesynct: {[c.name for c in synced_global]}")
     except Exception as e:
         print(f"❌ FEHLER beim Sync: {e}")
-    # ─────────────────────────────────────────────────────────────────────
 
-    bot.add_view(AufstellungView())
-    check_zeit.start()
-    print("Tasks gestartet. Bot ist bereit!")
+    print("Bot ist bereit!")
 
 @bot.event
 async def on_app_command_error(interaction: discord.Interaction, error):
@@ -611,7 +386,7 @@ async def on_app_command_error(interaction: discord.Interaction, error):
         print(f"Command Error: {error}")
         try:
             await interaction.response.send_message("Ein Fehler ist aufgetreten.", ephemeral=True)
-        except:
+        except Exception:
             pass
 
 # ─── START ────────────────────────────────────────────────────────────────────
